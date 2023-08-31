@@ -1,6 +1,6 @@
 import parseRange from "range-parser";
 
-interface Env {
+export interface Env {
   R2_BUCKET: R2Bucket,
   ALLOWED_ORIGINS?: string,
   CACHE_CONTROL?: string,
@@ -11,6 +11,8 @@ interface Env {
   HIDE_HIDDEN_FILES?: boolean
   DIRECTORY_CACHE_CONTROL?: string
 }
+
+const units = ['B', 'KB', 'MB', 'GB', 'TB'];
 
 type ParsedRange = { offset: number, length: number } | { suffix: number };
 
@@ -70,10 +72,15 @@ async function makeListingResponse(path: string, env: Env, request: Request): Pr
     for (let file of listing.objects) {
       let name = file.key.substring(path.length, file.key.length)
       if (name.startsWith(".") && env.HIDE_HIDDEN_FILES) continue;
+
+      let dateStr = file.uploaded.toISOString()
+      dateStr = dateStr.split('.')[0].replace('T', ' ')
+      dateStr = dateStr.slice(0, dateStr.lastIndexOf(':')) + 'Z'
+
       htmlList.push(
         `      <tr>` +
         `<td><a href="${encodeURIComponent(name)}">${name}</a></td>` +
-        `<td>${file.uploaded.toUTCString()}</td><td>${file.size}</td></tr>`);
+        `<td>${dateStr}</td><td>${niceBytes(file.size)}</td></tr>`);
 
       if (lastModified == null || file.uploaded > lastModified) {
         lastModified = file.uploaded;
@@ -88,9 +95,11 @@ async function makeListingResponse(path: string, env: Env, request: Request): Pr
   <head>
     <title>Index of ${path}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="utf-8">
     <style type="text/css">
       td { padding-right: 16px; text-align: right; font-family: monospace }
-      td:nth-of-type(1) { text-align: left; }
+      td:nth-of-type(1) { text-align: left; overflow-wrap: anywhere }
+      td:nth-of-type(3) { white-space: nowrap }
       th { text-align: left; }
       @media (prefers-color-scheme: dark) {
         body {
@@ -131,7 +140,9 @@ ${htmlList.join("\n")}
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const allowedMethods = ["GET", "HEAD", "OPTIONS"];
-    if (allowedMethods.indexOf(request.method) === -1) return new Response("Method Not Allowed", { status: 405 });
+    if (allowedMethods.indexOf(request.method) === -1) {
+      return new Response("Method Not Allowed", { status: 405, headers: { "allow": allowedMethods.join(", ") } });
+    }
 
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: { "allow": allowedMethods.join(", ") } })
@@ -139,7 +150,6 @@ export default {
 
     let triedIndex = false;
 
-    const url = new URL(request.url);
     let response: Response | undefined;
 
     const isCachingEnabled = env.CACHE_CONTROL !== "no-store"
@@ -153,6 +163,7 @@ export default {
 
     if (!response || !(response.ok || response.status == 304)) {
       console.warn("Cache miss");
+      const url = new URL(request.url);
       let path = (env.PATH_PREFIX || "") + decodeURIComponent(url.pathname);
 
       // directory logic
@@ -174,7 +185,7 @@ export default {
         }
       }
 
-      if (path !== "/") {
+      if (path !== "/" && path.startsWith("/")) {
         path = path.substring(1);
       }
 
@@ -312,3 +323,14 @@ export default {
     return response;
   },
 };
+
+function niceBytes(x: number) {
+
+  let l = 0, n = parseInt(x.toString(), 10) || 0;
+
+  while (n >= 1000 && ++l) {
+    n = n / 1000;
+  }
+
+  return (n.toFixed(n < 10 && l > 0 ? 1 : 0) + ' ' + units[l]);
+}
